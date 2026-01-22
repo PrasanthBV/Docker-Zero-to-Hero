@@ -1,4 +1,5 @@
-name: Build and push Docker image
+# Build, push to Docker Hub, then pull and run the image in a "deploy" job for testing
+name: Build, push and deploy (test run)
 
 on:
   push:
@@ -15,13 +16,18 @@ on:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    # expose outputs so dependent jobs can retrieve the image name and the SHA tag
+    outputs:
+      image_name: ${{ steps.set-vars.outputs.image_name }}
+      image_tag_sha: ${{ steps.set-vars.outputs.image_tag_sha }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set image variables
+      - id: set-vars
+        name: Set image variables and job outputs
         shell: bash
         run: |
           # Use workflow_dispatch input if provided; otherwise fall back to default
@@ -29,8 +35,13 @@ jobs:
           if [ -z "$repo" ]; then
             repo="first-docker-image"
           fi
+          image_name="${{ secrets.DOCKERHUB_USERNAME }}/$repo"
+          # Export for later steps in this job (GITHUB_ENV)
           echo "IMAGE_REPOSITORY=$repo" >> $GITHUB_ENV
-          echo "IMAGE_NAME=${{ secrets.DOCKERHUB_USERNAME }}/$repo" >> $GITHUB_ENV
+          echo "IMAGE_NAME=$image_name" >> $GITHUB_ENV
+          # Set step outputs (becomes steps.set-vars.outputs.*)
+          echo "image_name=$image_name" >> $GITHUB_OUTPUT
+          echo "image_tag_sha=${GITHUB_SHA}" >> $GITHUB_OUTPUT
 
       - name: Set up QEMU (optional, for multi-arch)
         uses: docker/setup-qemu-action@v2
@@ -50,4 +61,60 @@ jobs:
           tags: |
             ${{ env.IMAGE_NAME }}:${{ github.sha }}
             ${{ env.IMAGE_NAME }}:latest
-      
+          # Optional:
+          # platforms: linux/amd64,linux/arm64
+          # cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:cache
+          # cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:cache,mode=max
+
+  deploy:
+    name: Deploy (pull & run image)
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+      - name: Show resolved image and tag
+        run: |
+          echo "Image: ${{ needs.build-and-push.outputs.image_name }}"
+          echo "Tag (SHA): ${{ needs.build-and-push.outputs.image_tag_sha }}"
+
+      - name: Login to DockerHub (for pulling private images)
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Pull image from DockerHub
+        run: |
+          IMAGE="${{ needs.build-and-push.outputs.image_name }}:${{ needs.build-and-push.outputs.image_tag_sha }}"
+          echo "Pulling $IMAGE"
+          docker pull "$IMAGE"
+
+      - name: Run container
+        run: |
+          IMAGE="${{ needs.build-and-push.outputs.image_name }}:${{ needs.build-and-push.outputs.image_tag_sha }}"
+          CONTAINER_NAME="ci-deploy-test"
+          # Remove any previous container with same name (best-effort)
+          docker rm -f "$CONTAINER_NAME" || true
+          # Start container (detached). Adjust ports or args if your image requires them.
+          docker run -d --name "$CONTAINER_NAME" "$IMAGE"
+
+      - name: Wait and show status + logs
+        run: |
+          CONTAINER_NAME="ci-deploy-test"
+          # Give the container a few seconds to start
+          sleep 5
+          echo "Container status:"
+          docker ps --filter "name=${CONTAINER_NAME}" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+          echo "Last 200 lines of logs:"
+          docker logs --tail 200 "$CONTAINER_NAME" || true
+
+      - name: Inspect container (metadata)
+        run: |
+          CONTAINER_NAME="ci-deploy-test"
+          docker inspect "$CONTAINER_NAME" || true
+
+      - name: Stop and remove container
+        if: always()
+        run: |
+          CONTAINER_NAME="ci-deploy-test"
+          docker stop "$CONTAINER_NAME" || true
+          docker rm "$CONTAINER_NAME" || true
