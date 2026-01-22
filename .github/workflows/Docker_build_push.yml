@@ -1,0 +1,55 @@
+# Build Docker image from examples/first-docker-file/Dockerfile and push to DockerHub
+name: Build and push Docker image
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'DockerHub image name (repository name, e.g. my-app). Final image will be <DOCKERHUB_USERNAME>/<image>'
+        required: false
+        default: 'first-docker-image'
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    env:
+      # You can override image by using workflow_dispatch input `image`
+      IMAGE_REPOSITORY: ${{ github.event.inputs.image }}
+      IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/$${{ env.IMAGE_REPOSITORY }}
+      # Tags: commit SHA and latest
+      IMAGE_TAG_SHA: ${{ github.sha }}
+      IMAGE_TAG_LATEST: latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up QEMU (optional, for multi-arch)
+        uses: docker/setup-qemu-action@v2
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: examples/first-docker-file
+          file: examples/first-docker-file/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG_SHA }}
+            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG_LATEST }}
+          # Optionally enable buildx cache and platforms if you want multi-arch builds:
+          # platforms: linux/amd64,linux/arm64
+          # cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:cache
+          # cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:cache,mode=max
