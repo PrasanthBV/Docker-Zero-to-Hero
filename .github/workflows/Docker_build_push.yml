@@ -1,4 +1,3 @@
-# Build, push to Docker Hub, then pull and run the image in a "deploy" job for testing
 name: Build, push and deploy (test run)
 
 on:
@@ -16,7 +15,6 @@ on:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    # expose outputs so dependent jobs can retrieve the image name and the SHA tag
     outputs:
       image_name: ${{ steps.set-vars.outputs.image_name }}
       image_tag_sha: ${{ steps.set-vars.outputs.image_tag_sha }}
@@ -27,23 +25,41 @@ jobs:
           fetch-depth: 0
 
       - id: set-vars
-        name: Set image variables and job outputs
+        name: Set image variables and job outputs (robust)
         shell: bash
         run: |
-          # Use workflow_dispatch input if provided; otherwise fall back to default
-          repo="${{ github.event.inputs.image }}"
-          if [ -z "$repo" ]; then
-            repo="first-docker-image"
+          set -euxo pipefail
+          # workflow_dispatch input if present, otherwise fallback
+          repo_input="${{ github.event.inputs.image || '' }}"
+          if [ -z "$repo_input" ]; then
+            repo_input="first-docker-image"
           fi
-          image_name="${{ secrets.DOCKERHUB_USERNAME }}/$repo"
-          # Export for later steps in this job (GITHUB_ENV)
-          echo "IMAGE_REPOSITORY=$repo" >> $GITHUB_ENV
-          echo "IMAGE_NAME=$image_name" >> $GITHUB_ENV
-          # Set step outputs (becomes steps.set-vars.outputs.*)
-          echo "image_name=$image_name" >> $GITHUB_OUTPUT
-          echo "image_tag_sha=${GITHUB_SHA}" >> $GITHUB_OUTPUT
 
-      - name: Set up QEMU (optional, for multi-arch)
+          # Ensure secret is present (will be empty if missing)
+          DOCKER_USER="${{ secrets.DOCKERHUB_USERNAME || '' }}"
+
+          image_name="$DOCKER_USER/$repo_input"
+
+          # Export for later steps in this job
+          echo "IMAGE_REPOSITORY=$repo_input" >> "$GITHUB_ENV"
+          echo "IMAGE_NAME=$image_name" >> "$GITHUB_ENV"
+
+          # Set step outputs (becomes steps.set-vars.outputs.*)
+          echo "image_name=$image_name" >> "$GITHUB_OUTPUT"
+          echo "image_tag_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+          # Extra debug to show values in logs
+          echo "DEBUG: repo_input='$repo_input'"
+          echo "DEBUG: DOCKERHUB_USERNAME='${DOCKER_USER}'"
+          echo "DEBUG: image_name='$image_name'"
+          echo "DEBUG: image_tag_sha='${GITHUB_SHA}'"
+
+      - name: Show set-vars outputs (debug)
+        run: |
+          echo "steps.set-vars.outputs.image_name='${{ steps.set-vars.outputs.image_name }}'"
+          echo "steps.set-vars.outputs.image_tag_sha='${{ steps.set-vars.outputs.image_tag_sha }}'"
+
+      - name: Set up QEMU (optional)
         uses: docker/setup-qemu-action@v2
 
       - name: Login to DockerHub
@@ -61,56 +77,51 @@ jobs:
           tags: |
             ${{ env.IMAGE_NAME }}:${{ github.sha }}
             ${{ env.IMAGE_NAME }}:latest
-          # Optional:
-          # platforms: linux/amd64,linux/arm64
-          # cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:cache
-          # cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:cache,mode=max
 
   deploy:
     name: Deploy (pull & run image)
     runs-on: ubuntu-latest
     needs: build-and-push
     steps:
-      - name: Show resolved image and tag
+      - name: Show resolved outputs (debug)
         run: |
-          echo "Image: ${{ env.IMAGE_NAME }}"
-          echo "Tag (SHA): ${{ needs.build-and-push.outputs.image_tag_sha }}"
+          echo "needs.build-and-push.outputs.image_name='${{ needs.build-and-push.outputs.image_name }}'"
+          echo "needs.build-and-push.outputs.image_tag_sha='${{ needs.build-and-push.outputs.image_tag_sha }}'"
 
-      - name: Login to DockerHub (for pulling private images)
+      - name: Login to DockerHub (for private images)
         uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Pull image from DockerHub
+      - name: Pull image with fallback and run container
         run: |
-          IMAGE="${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag_sha }}"
-          echo "Pulling $IMAGE"
+          set -euxo pipefail
+          IMAGE_NAME="${{ needs.build-and-push.outputs.image_name || '' }}"
+          IMAGE_TAG="${{ needs.build-and-push.outputs.image_tag_sha || '' }}"
+
+          # Provide safe fallbacks and log WARNING if fallbacks used
+          if [ -z "$IMAGE_NAME" ]; then
+            echo "WARN: image_name is empty; falling back to default"
+            IMAGE_NAME="${{ secrets.DOCKERHUB_USERNAME || '' }}/first-docker-image"
+          fi
+          if [ -z "$IMAGE_TAG" ]; then
+            echo "WARN: image_tag_sha is empty; falling back to github.sha"
+            IMAGE_TAG="${{ github.sha }}"
+          fi
+
+          IMAGE="$IMAGE_NAME:$IMAGE_TAG"
+          echo "Pulling image: '$IMAGE'"
           docker pull "$IMAGE"
 
-      - name: Run container
-        run: |
-          IMAGE="${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag_sha }}"
           CONTAINER_NAME="ci-deploy-test"
-          # Remove any previous container with same name (best-effort)
           docker rm -f "$CONTAINER_NAME" || true
-          # Start container (detached). Adjust ports or args if your image requires them.
           docker run -d --name "$CONTAINER_NAME" "$IMAGE"
 
-      - name: Wait and show status + logs
-        run: |
-          CONTAINER_NAME="ci-deploy-test"
-          # Give the container a few seconds to start
+          # Wait for container and show logs
           sleep 5
-          echo "Container status:"
           docker ps --filter "name=${CONTAINER_NAME}" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-          echo "Last 200 lines of logs:"
           docker logs --tail 200 "$CONTAINER_NAME" || true
-
-      - name: Inspect container (metadata)
-        run: |
-          CONTAINER_NAME="ci-deploy-test"
-          docker inspect "$CONTAINER_NAME" || true
 
       - name: Stop and remove container
         if: always()
