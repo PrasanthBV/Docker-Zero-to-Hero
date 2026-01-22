@@ -40,16 +40,4 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v4
-        with:
-          context: examples/first-docker-file
-          file: examples/first-docker-file/Dockerfile
-          push: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG_SHA }}
-            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG_LATEST }}
-          # Optionally enable buildx cache and platforms if you want multi-arch builds:
-          # platforms: linux/amd64,linux/arm64
-          # cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:cache
-          # cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:cache,mode=max
+      
