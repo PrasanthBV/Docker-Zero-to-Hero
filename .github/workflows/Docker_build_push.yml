@@ -59,8 +59,8 @@ jobs:
           file: examples/first-docker-file/Dockerfile
           push: true
           tags: |
-            ${{ IMAGE_NAME }}:${{ github.sha }}
-            ${{ IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:latest
           # Optional:
           # platforms: linux/amd64,linux/arm64
           # cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:cache
@@ -73,7 +73,7 @@ jobs:
     steps:
       - name: Show resolved image and tag
         run: |
-          echo "Image: ${{ needs.build-and-push.outputs.image_name }}"
+          echo "Image: ${{ env.IMAGE_NAME }}"
           echo "Tag (SHA): ${{ needs.build-and-push.outputs.image_tag_sha }}"
 
       - name: Login to DockerHub (for pulling private images)
@@ -84,13 +84,13 @@ jobs:
 
       - name: Pull image from DockerHub
         run: |
-          IMAGE="${{ needs.build-and-push.outputs.image_name }}:${{ needs.build-and-push.outputs.image_tag_sha }}"
+          IMAGE="${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag_sha }}"
           echo "Pulling $IMAGE"
           docker pull "$IMAGE"
 
       - name: Run container
         run: |
-          IMAGE="${{ needs.build-and-push.outputs.image_name }}:${{ needs.build-and-push.outputs.image_tag_sha }}"
+          IMAGE="${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag_sha }}"
           CONTAINER_NAME="ci-deploy-test"
           # Remove any previous container with same name (best-effort)
           docker rm -f "$CONTAINER_NAME" || true
